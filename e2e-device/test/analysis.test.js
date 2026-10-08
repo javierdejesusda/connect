@@ -100,7 +100,7 @@ describe('advanceOver', () => {
 
 describe('parseClockText and clockDelta', () => {
   it('parses the TimeDisplay text', () => {
-    assert.equal(parseClockText('18:30:34 – 0'), 18 * 3600 + 30 * 60 + 34);
+    assert.equal(parseClockText('18:30:34 \u2013 0'), 18 * 3600 + 30 * 60 + 34);
     assert.equal(parseClockText('...'), null);
     assert.equal(parseClockText(null), null);
   });
