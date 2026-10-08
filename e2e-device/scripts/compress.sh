@@ -23,25 +23,30 @@ for candidate in "${FONT_FILE:-}" /System/Library/Fonts/Helvetica.ttc /usr/share
   fi
 done
 
+has_drawtext=no
+if ffmpeg -hide_banner -filters 2> /dev/null | grep -q drawtext; then
+  has_drawtext=yes
+fi
+
 safe_caption=$(printf '%s' "$caption" | tr -d "':\%,;[]")
 
 encode() {
-  local height="$1" crf="$2" with_text="$3"
-  local filter="scale=-2:${height}:flags=lanczos,format=yuv420p"
-  if [ "$with_text" = "yes" ] && [ -n "$font" ]; then
+  local width="$1" crf="$2" with_text="$3"
+  local filter="scale=${width}:-2:flags=lanczos,format=yuv420p"
+  if [ "$with_text" = "yes" ] && [ -n "$font" ] && [ "$has_drawtext" = "yes" ]; then
     filter="${filter},drawtext=fontfile=${font}:text=${safe_caption}:x=8:y=8:fontsize=h/55:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=4"
   fi
-  ffmpeg -y -loglevel error -i "$input" -vf "$filter" -c:v libx264 -preset veryfast -crf "$crf" -movflags +faststart -an "$output"
+  ffmpeg -y -loglevel error -i "$input" -vf "$filter" -c:v libx264 -preset superfast -crf "$crf" -movflags +faststart -metadata title="$caption" -an "$output"
 }
 
-for profile in "720 30" "720 34" "540 34" "480 38" "360 40"; do
+for profile in "720 26" "720 30" "540 32" "480 36" "360 40"; do
   set -- $profile
   if ! encode "$1" "$2" yes; then
     echo "caption overlay failed, encoding without it" >&2
     encode "$1" "$2" no
   fi
   size=$(wc -c < "$output" | tr -d ' ')
-  echo "height=$1 crf=$2 size=$size"
+  echo "width=$1 crf=$2 size=$size"
   if [ "$size" -lt "$limit" ]; then
     exit 0
   fi

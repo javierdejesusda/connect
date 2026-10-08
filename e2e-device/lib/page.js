@@ -44,6 +44,7 @@ export function createPage(browser, { platform }) {
   }
 
   const now = () => browser.execute('return window.__ev.now();');
+  const diag = () => browser.execute('return window.__ev.diag();');
   const snap = () => browser.execute('return window.__ev.snap();');
   const logSince = (from) => browser.execute('return window.__ev.log(arguments[0]);', from);
 
@@ -110,6 +111,7 @@ export function createPage(browser, { platform }) {
     if (!target.found) throw new Error(`tap target not found: ${JSON.stringify(spec)}`);
     if (target.scrolled) {
       await browser.pause(500);
+      if (platform === 'ios' && iosNativeWorks) await calibrateIos();
       target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
     }
     let method = platform === 'ios' ? 'native-tap' : 'w3c-touch';
@@ -178,6 +180,7 @@ export function createPage(browser, { platform }) {
   return {
     installProbe,
     ensureProbe,
+    diag,
     open,
     now,
     snap,

@@ -325,7 +325,57 @@
     };
   }
 
+  function ranges(timeRanges) {
+    var out = [];
+    for (var i = 0; i < timeRanges.length; i += 1) {
+      out.push([r3(timeRanges.start(i)), r3(timeRanges.end(i))]);
+    }
+    return out;
+  }
+
+  function diag() {
+    var video = videoEl();
+    var resources = [];
+    try {
+      performance.getEntriesByType('resource').forEach(function (entry) {
+        if (/m3u8|qcamera|\.ts(\?|$)/.test(entry.name)) {
+          resources.push({
+            name: entry.name.slice(-70),
+            type: entry.initiatorType,
+            start: Math.round(entry.startTime),
+            duration: Math.round(entry.duration),
+            size: entry.transferSize,
+            status: entry.responseStatus,
+          });
+        }
+      });
+    } catch (e) {
+      resources.push({ error: String(e) });
+    }
+    return {
+      snap: snap(),
+      video: video ? {
+        networkState: video.networkState,
+        readyState: video.readyState,
+        error: video.error ? { code: video.error.code, message: video.error.message } : null,
+        paused: video.paused,
+        ended: video.ended,
+        currentTime: r3(video.currentTime),
+        buffered: ranges(video.buffered),
+        seekable: ranges(video.seekable),
+        src: (video.currentSrc || '').slice(-80),
+        preload: video.preload,
+        muted: video.muted,
+      } : null,
+      events: log.events.slice(-25),
+      calls: log.calls.slice(-10),
+      writes: log.writes.slice(-10),
+      resources: resources.slice(-12),
+    };
+  }
+
   window.__ev = {
+    diag: diag,
     now: now,
     info: info,
     snap: snap,

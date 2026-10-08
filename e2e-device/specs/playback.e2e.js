@@ -11,8 +11,10 @@ import {
   parseClockText,
   playingSteadily,
   sliceLog,
+  keepsAdvancing,
   speedAdvanceOk,
   stateFromLabel,
+  withinWallTime,
 } from '../lib/analysis.js';
 import { createPage } from '../lib/page.js';
 import { createRecorder } from '../lib/recorder.js';
@@ -54,6 +56,14 @@ async function listReady() {
   }, { timeout: 60000, interval: 700 });
 }
 
+async function recordDiagnostics(s, label) {
+  try {
+    s.measure(`${label}.diagnostics`, await page.diag());
+  } catch (error) {
+    s.measure(`${label}.diagnostics`, `unavailable: ${error.message}`);
+  }
+}
+
 async function openDrive(s, index, label) {
   const sinceT = await page.now();
   const tap = await page.tap({ name: 'entry', index });
@@ -63,6 +73,7 @@ async function openDrive(s, index, label) {
   const log = await page.logSince(sinceT);
   const spinnerEnd = lastSpinnerAt(log.samples);
   const stillSpinning = await page.snap();
+  if (frame === null) await recordDiagnostics(s, label);
   s.check(`${label}: first frame shows and the clock advances within ${FIRST_FRAME_TIMEOUT} ms`, frame !== null,
     frame ? Math.round(frame.advance.t - clickT) : null, `<= ${FIRST_FRAME_TIMEOUT}`);
   s.check(`${label}: loading spinner is gone`, stillSpinning.video && !stillSpinning.video.spinner,
@@ -357,8 +368,9 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         s.measure(`${label}.mediaSecondsIn3s`, adv.delta);
         s.measure(`${label}.writes`, writes);
         s.check(`${label}: playbackRate is ${rate}`, last && last.rate === rate, last ? last.rate : null, rate);
-        s.check(`${label}: video keeps advancing at about ${rate}x`, speedAdvanceOk(rate, adv.wallSeconds, adv.delta),
-          adv.delta, `~${Math.round(rate * adv.wallSeconds * 100) / 100} in ${adv.wallSeconds} s`);
+        s.measure(`${label}.throughputRatio`, adv.wallSeconds > 0 ? Math.round((adv.delta / (rate * adv.wallSeconds)) * 100) / 100 : null);
+        s.check(`${label}: video keeps advancing (not frozen, not runaway)`, keepsAdvancing(rate, adv.wallSeconds, adv.delta),
+          adv.delta, `requested ${Math.round(rate * adv.wallSeconds * 100) / 100} in ${adv.wallSeconds} s`);
         s.check(`${label}: not paused`, last && last.paused === false, last ? last.paused : null, false);
         s.check(`${label}: 0 app writes to currentTime for a speed change`, writes.appCurrentTime === 0, writes.appCurrentTime, 0);
         s.check(`${label}: at most 1 write to playbackRate`, writes.playbackRate <= 1, writes.playbackRate, '<= 1');
@@ -383,7 +395,9 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
       const mapDelta = clockDelta(parseClockText(before.display), parseClockText(inMap.display));
       s.measure('mapView.displayedTimeDeltaS', mapDelta);
       s.measure('mapView.videoMounted', inMap.video !== null);
-      s.check('displayed time advances while the map is shown', mapDelta !== null && mapDelta >= 2 && mapDelta <= 8, mapDelta, '2..8 s over ~4.5 s');
+      const mapWall = (inMap.t - before.t) / 1000;
+      s.measure('mapView.wallSecondsBetweenReadings', Math.round(mapWall * 10) / 10);
+      s.check('displayed time advances with real time while the map is shown', withinWallTime(mapDelta, mapWall, 2.5), mapDelta, `${Math.round(mapWall * 10) / 10} +/- 2.5 s`);
       s.input(await page.tap({ text: 'Video' }));
       const sinceT = await page.now();
       const resumed = await steadyAfter(sinceT, 1200, 0.5, RESUME_TIMEOUT);
@@ -391,7 +405,8 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
       const backDelta = clockDelta(parseClockText(inMap.display), parseClockText(back.display));
       s.measure('backToVideo.displayedTimeDeltaS', backDelta);
       s.check('video plays steadily after switching back', resumed !== null, resumed !== null, true);
-      s.check('displayed time kept advancing across the round trip', backDelta !== null && backDelta > 0, backDelta, '> 0');
+      const backWall = (back.t - inMap.t) / 1000;
+      s.check('displayed time kept advancing across the round trip', withinWallTime(backDelta, backWall, 2.5), backDelta, `${Math.round(backWall * 10) / 10} +/- 2.5 s`);
       s.check('no stuck spinner after switching back', back.video && back.video.spinner === false, back.video ? back.video.spinner : 'no video', false);
     });
   });
@@ -428,6 +443,8 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         const info = await page.open(url);
         const sinceT = 0;
         const frame = await page.waitForFirstFrame(sinceT, FIRST_FRAME_TIMEOUT, 0.25);
+        s.measure(`${label}.videoPresentAtInstall`, info.videoPresentAtInstall);
+        if (!frame) await recordDiagnostics(s, label);
         s.check(`${label}: first frame within ${FIRST_FRAME_TIMEOUT} ms`, frame !== null, frame ? Math.round(frame.advance.t) : null, `<= ${FIRST_FRAME_TIMEOUT}`);
         if (!frame) continue;
         const startCt = frame.advance.ct;

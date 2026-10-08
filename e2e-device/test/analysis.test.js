@@ -7,6 +7,8 @@ import {
   clockDelta,
   countWrites,
   firstAdvanceAt,
+  keepsAdvancing,
+  withinWallTime,
   lastSpinnerAt,
   playingSteadily,
   landingTolerance,
@@ -233,5 +235,32 @@ describe('playingSteadily', () => {
     const flat = [ok(0, 10), ok(300, 10), ok(600, 10), ok(900, 10), ok(1200, 10)];
     assert.equal(playingSteadily(flat, 1000, 0.5), false);
     assert.equal(playingSteadily([ok(0, 10), ok(300, 10.3)], 1000, 0.1), false);
+  });
+});
+
+describe('keepsAdvancing', () => {
+  it('accepts a clock that moves at least 40 percent of real time at 1x and above', () => {
+    assert.equal(keepsAdvancing(1, 3, 2.8), true);
+    assert.equal(keepsAdvancing(8, 2.7, 5), true);
+    assert.equal(keepsAdvancing(8, 2.7, 1), false);
+  });
+
+  it('rejects a frozen clock at any rate', () => {
+    assert.equal(keepsAdvancing(2, 3, 0), false);
+    assert.equal(keepsAdvancing(0.1, 3, 0), false);
+  });
+
+  it('scales the expectation down below 1x and caps runaway clocks', () => {
+    assert.equal(keepsAdvancing(0.25, 3, 0.7), true);
+    assert.equal(keepsAdvancing(0.25, 3, 6), false);
+    assert.equal(keepsAdvancing(1, 3, 12), false);
+  });
+});
+
+describe('withinWallTime', () => {
+  it('compares a displayed time delta with the wall time between two readings', () => {
+    assert.equal(withinWallTime(9, 9.2, 2.5), true);
+    assert.equal(withinWallTime(4, 9.2, 2.5), false);
+    assert.equal(withinWallTime(null, 9, 2.5), false);
   });
 });

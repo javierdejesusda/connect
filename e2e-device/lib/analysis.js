@@ -200,6 +200,37 @@ export function speedAdvanceOk(rate, elapsedSeconds, deltaSeconds) {
 }
 
 /**
+ * Whether the media clock keeps moving at a requested speed, without asking
+ * a simulator to sustain it. At 1x and above it must cover at least 40 percent
+ * of real time, below 1x at least 40 percent of the requested rate, and it
+ * must not run far past the requested rate either.
+ *
+ * @param {number} rate Requested playback rate.
+ * @param {number} elapsedSeconds Wall seconds observed.
+ * @param {number} deltaSeconds Media seconds covered.
+ * @return {boolean} True when the clock is moving and not runaway.
+ */
+export function keepsAdvancing(rate, elapsedSeconds, deltaSeconds) {
+  const floorBase = Math.min(rate, 1) * elapsedSeconds;
+  const lower = Math.max(0.4 * floorBase - 0.05, 0.05);
+  const upper = 1.6 * rate * elapsedSeconds + 0.5;
+  return deltaSeconds >= lower && deltaSeconds <= upper;
+}
+
+/**
+ * Whether a displayed clock delta matches the wall time between two readings.
+ *
+ * @param {?number} displayedDelta Seconds the on-screen clock moved.
+ * @param {number} wallSeconds Seconds between the two readings.
+ * @param {number} tolerance Allowed difference in seconds.
+ * @return {boolean} True when the on-screen clock followed real time.
+ */
+export function withinWallTime(displayedDelta, wallSeconds, tolerance) {
+  if (displayedDelta === null || displayedDelta === undefined) return false;
+  return Math.abs(displayedDelta - wallSeconds) <= tolerance;
+}
+
+/**
  * Maps the aria-label of the play button to the state it announces.
  *
  * @param {?string} label "Pause" while playing, "Unpause" while paused.

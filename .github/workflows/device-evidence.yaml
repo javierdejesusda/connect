@@ -141,6 +141,7 @@ jobs:
       - name: Run device specs on the simulator
         id: wdio
         continue-on-error: true
+        timeout-minutes: 35
         env:
           DEVICE_NAME: ${{ steps.sim.outputs.name }}
           UDID: ${{ steps.sim.outputs.udid }}
@@ -246,6 +247,7 @@ jobs:
       - name: Run device specs on the emulator
         id: emulator
         continue-on-error: true
+        timeout-minutes: 30
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
