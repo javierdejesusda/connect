@@ -1,0 +1,22 @@
+{
+  "name": "connect-device-evidence",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mobile Safari (iOS Simulator) and Android Chrome (emulator) playback evidence for the connect web app, driven by WebdriverIO and Appium.",
+  "scripts": {
+    "test:unit": "node --test \"test/*.test.js\"",
+    "wdio": "wdio run wdio.conf.js"
+  },
+  "devDependencies": {
+    "@wdio/cli": "9.32.0",
+    "@wdio/local-runner": "9.32.0",
+    "@wdio/mocha-framework": "9.32.0",
+    "@wdio/spec-reporter": "9.32.0",
+    "appium": "3.8.0",
+    "webdriverio": "9.32.0"
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  }
+}
