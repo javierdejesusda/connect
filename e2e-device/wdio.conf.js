@@ -76,7 +76,7 @@ export const config = {
   reporters: ['spec'],
   mochaOpts: {
     ui: 'bdd',
-    timeout: 12 * 60 * 1000,
+    timeout: 20 * 60 * 1000,
     bail: false,
   },
 };

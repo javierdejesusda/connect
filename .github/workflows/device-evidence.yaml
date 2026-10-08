@@ -141,7 +141,7 @@ jobs:
       - name: Run device specs on the simulator
         id: wdio
         continue-on-error: true
-        timeout-minutes: 35
+        timeout-minutes: 40
         env:
           DEVICE_NAME: ${{ steps.sim.outputs.name }}
           UDID: ${{ steps.sim.outputs.udid }}

@@ -6,15 +6,19 @@ import {
   advanceOver,
   clockDelta,
   countWrites,
+  keepsAdvancing,
   landingTolerance,
   lastSpinnerAt,
+  loopAdvance,
   parseClockText,
   playingSteadily,
+  sampleTrace,
   sliceLog,
-  keepsAdvancing,
   speedAdvanceOk,
+  startConsistent,
   stateFromLabel,
   withinWallTime,
+  wrapDelta,
 } from '../lib/analysis.js';
 import { createPage } from '../lib/page.js';
 import { createRecorder } from '../lib/recorder.js';
@@ -31,6 +35,9 @@ const DEEPLINK_REPEATS = Number(env.DEEPLINK_REPEATS || 3);
 const FIRST_FRAME_TIMEOUT = Number(env.FIRST_FRAME_TIMEOUT || 45000);
 const RESUME_TIMEOUT = Number(env.RESUME_TIMEOUT || 30000);
 const STEADY_MS = 10000;
+const RANGE_START = 10;
+const RANGE_END = 20;
+const SLOW_RESUME_MS = 8000;
 const ORIGIN = new URL(TARGET_URL).origin;
 const EXPECTED_PATH = JOB === 'iphone' ? 'native-hls' : 'mse';
 
@@ -236,9 +243,14 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         const landing = seeked ? seeked.ct : null;
         const writes = writesBetween(log, clickT, settledT);
         const last = log.samples[log.samples.length - 1];
+        const resumeMs = steady ? Math.round(steady.samples[steady.samples.length - 1].t - clickT) : null;
         s.measure(`${label}.expectedS`, Math.round(expected * 10) / 10);
         s.measure(`${label}.landingS`, landing);
-        s.measure(`${label}.timeToResumeMs`, steady ? Math.round(steady.samples[steady.samples.length - 1].t - clickT) : null);
+        s.measure(`${label}.tapErrPx`, tap.errPx ?? null);
+        s.measure(`${label}.timeToResumeMs`, resumeMs);
+        if (resumeMs === null || resumeMs > SLOW_RESUME_MS) {
+          s.measure(`${label}.trace`, sampleTrace(sliceLog(log, clickT, settledT).samples, clickT, 1000).slice(0, 45));
+        }
         s.measure(`${label}.writes`, writes);
         s.measure(`${label}.writeSites`, sliceLog(log, clickT, settledT).writes.slice(0, 4).map((w) => `${w.prop}:${w.source}:${w.site[0] || ''}`));
         s.check(`${label}: playback resumed within ${RESUME_TIMEOUT} ms`, steady !== null, steady !== null, true);
@@ -273,6 +285,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
       const tail = log.samples.filter((smp) => smp.t >= log.t - 2000);
       const moved = advanceOver(tail).delta;
       s.measure(`${label}.expectedS`, Math.round(expected * 10) / 10);
+      s.measure(`${label}.tapErrPx`, tap.errPx ?? null);
       s.measure(`${label}.currentTimeS`, snap.video.ct);
       s.measure(`${label}.movedInLast2sS`, moved);
       s.measure(`${label}.writes`, writes);
@@ -349,6 +362,12 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         return;
       }
       s.check('speed buttons are present', snap.hasIncrease && snap.hasDecrease, `${snap.hasIncrease}/${snap.hasDecrease}`, 'true/true');
+      if (snap.video && snap.video.ct > state.duration * 0.35) {
+        const rewind = await page.tap({ name: 'ruler', fx: 0.1 });
+        s.input(rewind);
+        s.measure('headroom', 'sought back to 10% of the drive so 8x cannot reach the end and loop');
+        await steadyAfter(rewind.from, 1200, 0.5, RESUME_TIMEOUT);
+      }
       const plan = [
         ['faster', 2], ['faster', 4], ['faster', 8],
         ['slower', 4], ['slower', 2], ['slower', 1], ['slower', 0.5], ['slower', 0.25], ['slower', 0.1],
@@ -453,19 +472,32 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         await browser.pause(4000);
         const snap1 = await page.snap();
         const log = await page.logSince(frame.advance.t);
-        const adv = advanceOver(log.samples.filter((x) => x.t <= frame.advance.t + 4000));
+        const span = RANGE_END - RANGE_START;
+        const adv = loopAdvance(log.samples.filter((x) => x.t <= frame.advance.t + 4000), span);
         const shown = clockDelta(state.clock0, parseClockText(snap0.display));
+        const shownAdvance = wrapDelta(clockDelta(parseClockText(snap0.display), parseClockText(snap1.display)), span);
+        const observedStart = !info.videoPresentAtInstall;
+        const navS = (frame.log.navMsAtInstall + frame.advance.t) / 1000;
+        const navAtSnapS = (frame.log.navMsAtInstall + snap0.t) / 1000;
         s.measure(`${label}.startCurrentTimeS`, startCt);
+        s.measure(`${label}.secondsSinceNavigationAtFirstFrame`, Math.round(navS * 10) / 10);
         s.measure(`${label}.decodedSamplesBeforeRangeStart`, decoded.filter((x) => x.ct < 5).length);
         s.measure(`${label}.displayedOffsetFromDriveStartS`, shown);
         s.measure(`${label}.advancedIn4sS`, adv.delta);
-        s.measure(`${label}.videoPresentAtInstall`, info.videoPresentAtInstall);
         s.measure(`${label}.writes`, countWrites(log.writes));
-        s.check(`${label}: video time starts near 10 s`, startCt !== null && startCt >= 8 && startCt <= 14, startCt, '8..14');
-        s.check(`${label}: reported time starts near 10 s after the drive start`, shown !== null && shown >= 7 && shown <= 16, shown, '7..16');
-        s.check(`${label}: advances after the deep link start`, adv.delta >= 2.5, adv.delta, '>= 2.5 in 4 s');
-        s.check(`${label}: reported time advances`, clockDelta(parseClockText(snap0.display), parseClockText(snap1.display)) >= 2,
-          clockDelta(parseClockText(snap0.display), parseClockText(snap1.display)), '>= 2');
+        if (observedStart) {
+          s.check(`${label}: video time starts near 10 s`, startCt !== null && startCt >= 8 && startCt <= 14, startCt, '8..14');
+          s.check(`${label}: reported time starts near 10 s after the drive start`, shown !== null && shown >= 7 && shown <= 16, shown, '7..16');
+        } else {
+          s.check(`${label}: first video time seen fits a start at 10 s (probe attached late, ${Math.round(navS * 10) / 10} s after navigation)`,
+            startConsistent({ ct: startCt, elapsedSeconds: navS, rangeStart: RANGE_START, rangeEnd: RANGE_END, tolerance: 1.5 }),
+            startCt, `${RANGE_START}..${RANGE_END}, at most ${RANGE_START} + elapsed`);
+          s.check(`${label}: reported time first seen fits a start at 10 s after the drive start`,
+            shown !== null && shown >= 7 && startConsistent({ ct: shown, elapsedSeconds: navAtSnapS, rangeStart: RANGE_START, rangeEnd: RANGE_END, tolerance: 2.5 }),
+            shown, `7..${RANGE_END}, at most ${RANGE_START} + elapsed`);
+        }
+        s.check(`${label}: advances after the deep link start (the 10 to 20 s range loops)`, adv.delta >= 2.5, adv.delta, '>= 2.5 in 4 s');
+        s.check(`${label}: reported time advances`, shownAdvance !== null && shownAdvance >= 2, shownAdvance, '>= 2');
         s.check(`${label}: playing and no stuck spinner`, snap1.video && !snap1.video.paused && !snap1.video.spinner,
           snap1.video ? `${snap1.video.paused}/${snap1.video.spinner}` : 'no video', 'false/false');
       }
