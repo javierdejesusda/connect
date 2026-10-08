@@ -1,0 +1,296 @@
+name: device-evidence
+
+on:
+  push:
+    branches: [device-evidence]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Full URL of the /demo page. Empty means the PR preview, or the master build when the commit message contains [baseline].
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PR_PREVIEW_URL: https://906.connect-d5y.pages.dev/demo
+  BASELINE_URL: https://latest.connect-d5y.pages.dev/demo
+  EVIDENCE_LABEL: simulator/emulator (CI)
+
+jobs:
+  target:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      url: ${{ steps.pick.outputs.url }}
+      kind: ${{ steps.pick.outputs.kind }}
+    steps:
+      - id: pick
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if [ -n "$INPUT_TARGET" ]; then
+            url="$INPUT_TARGET"
+          elif printf '%s' "$COMMIT_MESSAGE" | grep -qF '[baseline]'; then
+            url="$BASELINE_URL"
+          else
+            url="$PR_PREVIEW_URL"
+          fi
+          case "$url" in
+            "$BASELINE_URL") kind=baseline-master ;;
+            "$PR_PREVIEW_URL") kind=pr-preview ;;
+            *) kind=custom ;;
+          esac
+          code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+          echo "target $url ($kind) answered HTTP $code"
+          curl -sI "$url" | grep -iE '^(etag|last-modified|date):' || true
+          test "$code" = 200
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+
+  ios:
+    name: ${{ matrix.id }}
+    needs: target
+    runs-on: macos-15
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: iphone
+            devices: iPhone 16|iPhone 16 Pro|iPhone 15
+            ios_major: '18'
+          - id: ipad
+            devices: iPad Air 11-inch (M3)|iPad Air 11-inch (M2)|iPad (10th generation)
+            ios_major: '18'
+    env:
+      OUT_DIR: ${{ github.workspace }}/out
+      TARGET_URL: ${{ needs.target.outputs.url }}
+      TARGET_KIND: ${{ needs.target.outputs.kind }}
+      JOB: ${{ matrix.id }}
+      PLATFORM: ios
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: e2e-device
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e-device/package-lock.json
+
+      - name: Install dependencies and the XCUITest driver
+        working-directory: e2e-device
+        run: |
+          npm ci --no-audit --no-fund
+          npx appium driver install xcuitest@12.13.3
+          npx appium driver list --installed
+
+      - name: Xcode version
+        id: xcode
+        run: |
+          xcodebuild -version
+          echo "version=$(xcodebuild -version | head -1 | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore WebDriverAgent build
+        id: wda
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/wda-derived
+          key: wda-${{ runner.os }}-${{ steps.xcode.outputs.version }}-xcuitest-12.13.3-v1
+
+      - name: Select simulator
+        id: sim
+        run: |
+          xcrun simctl list runtimes available
+          node e2e-device/scripts/pick-sim.mjs "${{ matrix.devices }}" "${{ matrix.ios_major }}" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Boot simulator
+        id: boot
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      - name: Boot simulator again after a failed first boot
+        if: steps.boot.outcome != 'success'
+        timeout-minutes: 10
+        run: |
+          xcrun simctl shutdown all || true
+          xcrun simctl erase "${{ steps.sim.outputs.udid }}" || true
+          xcrun simctl boot "${{ steps.sim.outputs.udid }}"
+          xcrun simctl bootstatus "${{ steps.sim.outputs.udid }}" -b
+
+      - name: Start Appium
+        run: |
+          mkdir -p "$OUT_DIR"
+          cd e2e-device
+          nohup npx appium --log "$OUT_DIR/appium.log" --log-level info > "$OUT_DIR/appium.stdout" 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:4723/status > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          cat "$OUT_DIR/appium.stdout"
+          exit 1
+
+      - name: Run device specs on the simulator
+        id: wdio
+        continue-on-error: true
+        env:
+          DEVICE_NAME: ${{ steps.sim.outputs.name }}
+          UDID: ${{ steps.sim.outputs.udid }}
+          IOS_VERSION: ${{ steps.sim.outputs.os }}
+          OS_LABEL: iOS ${{ steps.sim.outputs.os }}
+          RUNTIME_ID: ${{ steps.sim.outputs.runtime }}
+          XCODE_VERSION: ${{ steps.xcode.outputs.version }}
+          WDA_DERIVED_DATA: ${{ runner.temp }}/wda-derived
+          WDA_PREBUILT: ${{ steps.wda.outputs.cache-hit == 'true' }}
+        run: |
+          export RUNNER_IMAGE="$ImageOS $ImageVersion"
+          bash e2e-device/scripts/run-wdio.sh
+
+      - name: Stop any leftover recording
+        if: always()
+        run: |
+          pkill -INT -f 'simctl io' || true
+          sleep 4
+          ls -la "$OUT_DIR" || true
+
+      - name: Install ffmpeg
+        if: always()
+        run: command -v ffmpeg || brew install ffmpeg
+
+      - name: Compress the recording
+        if: always()
+        run: |
+          bash e2e-device/scripts/compress.sh "$OUT_DIR/${JOB}-raw.mp4" "$OUT_DIR/${JOB}.mp4" \
+            "${{ steps.sim.outputs.name }} iOS ${{ steps.sim.outputs.os }} simulator (CI)" || true
+
+      - name: Publish the results table
+        if: always()
+        run: |
+          if [ -f "$OUT_DIR/results.md" ]; then cat "$OUT_DIR/results.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}-evidence
+          path: |
+            out/${{ matrix.id }}.mp4
+            out/results.json
+            out/results.md
+            out/appium.log
+            out/simctl-record.log
+            out/wdio-logs
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Save WebDriverAgent build
+        if: always() && steps.wda.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/wda-derived
+          key: wda-${{ runner.os }}-${{ steps.xcode.outputs.version }}-xcuitest-12.13.3-v1
+
+      - name: Fail the job when the specs failed
+        if: steps.wdio.outcome != 'success'
+        run: |
+          echo "the device specs failed, see results.md in the ${{ matrix.id }}-evidence artifact"
+          exit 1
+
+  android:
+    name: android
+    needs: target
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      OUT_DIR: ${{ github.workspace }}/out
+      TARGET_URL: ${{ needs.target.outputs.url }}
+      TARGET_KIND: ${{ needs.target.outputs.kind }}
+      JOB: android
+      DEVICE_NAME: Pixel 7 emulator (AVD)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: e2e-device
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: e2e-device/package-lock.json
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install dependencies and the UiAutomator2 driver
+        working-directory: e2e-device
+        run: |
+          npm ci --no-audit --no-fund
+          npx appium driver install uiautomator2@8.7.0
+          npx appium driver list --installed
+
+      - name: Install ffmpeg
+        run: command -v ffmpeg || (sudo apt-get update && sudo apt-get install -y ffmpeg)
+
+      - name: Run device specs on the emulator
+        id: emulator
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          profile: pixel_7
+          ram-size: 3072M
+          disable-animations: true
+          script: bash e2e-device/scripts/android-run.sh
+
+      - name: Compress the recording
+        if: always()
+        run: |
+          ls -la "$OUT_DIR/chunks" || true
+          mkdir -p "$OUT_DIR"
+          : > "$OUT_DIR/chunks.txt"
+          for f in $(ls "$OUT_DIR"/chunks/rec_*.mp4 2>/dev/null | sort -V); do echo "file '$f'" >> "$OUT_DIR/chunks.txt"; done
+          if [ -s "$OUT_DIR/chunks.txt" ]; then
+            ffmpeg -y -loglevel error -f concat -safe 0 -i "$OUT_DIR/chunks.txt" -c copy "$OUT_DIR/android-raw.mp4" || true
+            bash e2e-device/scripts/compress.sh "$OUT_DIR/android-raw.mp4" "$OUT_DIR/android.mp4" \
+              "Pixel 7 Android emulator (CI) Chrome" || true
+          fi
+
+      - name: Publish the results table
+        if: always()
+        run: |
+          if [ -f "$OUT_DIR/results.md" ]; then cat "$OUT_DIR/results.md" >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-evidence
+          path: |
+            out/android.mp4
+            out/results.json
+            out/results.md
+            out/appium.log
+            out/android-facts.txt
+            out/wdio-logs
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail the job when the specs failed
+        if: steps.emulator.outcome != 'success'
+        run: |
+          echo "the device specs failed, see results.md in the android-evidence artifact"
+          exit 1
