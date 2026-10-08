@@ -106,7 +106,6 @@ export function createPage(browser, { platform }) {
    * @return {Promise<Object>} How the tap was delivered and where it landed.
    */
   async function tap(spec) {
-    const from = await now();
     let target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
     if (!target.found) throw new Error(`tap target not found: ${JSON.stringify(spec)}`);
     if (target.scrolled) {
@@ -114,6 +113,7 @@ export function createPage(browser, { platform }) {
       if (platform === 'ios' && iosNativeWorks) await calibrateIos();
       target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
     }
+    const from = await now();
     let method = platform === 'ios' ? 'native-tap' : 'w3c-touch';
     if (platform === 'ios' && iosNativeWorks) {
       await nativeTap(target.x + iosOrigin.x, target.y + iosOrigin.y);
@@ -128,6 +128,7 @@ export function createPage(browser, { platform }) {
       method = `native-tap-recalibrated(${calibration.ok})`;
       if (calibration.ok) {
         const retargeted = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+        target = retargeted;
         await nativeTap(retargeted.x + iosOrigin.x, retargeted.y + iosOrigin.y);
         await browser.pause(150);
         log = await logSince(from);
@@ -136,7 +137,7 @@ export function createPage(browser, { platform }) {
     }
     if (trusted.length === 0) {
       await browser.execute('return window.__ev.syntheticTap(arguments[0]);', spec);
-      return { method: 'synthetic-fallback', trusted: false, target };
+      return { method: 'synthetic-fallback', trusted: false, target, from };
     }
     const down = trusted.find((e) => e.type === 'pointerdown' || e.type === 'touchstart') || trusted[0];
     const errPx = Math.max(Math.abs(down.x - target.x), Math.abs(down.y - target.y));

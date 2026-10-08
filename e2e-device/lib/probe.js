@@ -11,7 +11,7 @@
   if (window.__ev) return;
 
   var T0 = performance.now();
-  var MAX = 8000;
+  var MAX = 20000;
   var log = {
     startedAt: new Date().toISOString(),
     videoPresentAtInstall: !!document.querySelector('video'),
@@ -175,21 +175,37 @@
     return el ? el.getAttribute('aria-label') : null;
   }
 
+  function bufferedEnd(video) {
+    var ct = video.currentTime;
+    for (var i = 0; i < video.buffered.length; i += 1) {
+      if (ct >= video.buffered.start(i) - 0.05 && ct <= video.buffered.end(i) + 0.05) return r3(video.buffered.end(i));
+    }
+    return null;
+  }
+
+  var tick = 0;
   setInterval(function () {
     var video = videoEl();
+    tick += 1;
     if (!video) {
       push(log.samples, { t: now(), none: true });
       return;
     }
-    push(log.samples, {
+    var sample = {
       t: now(),
       ct: r3(video.currentTime),
       rs: video.readyState,
+      ns: video.networkState,
       paused: video.paused,
       rate: video.playbackRate,
       seeking: video.seeking,
       spin: spinnerOver(video),
-    });
+    };
+    if (tick % 5 === 0) {
+      sample.buf = bufferedEnd(video);
+      sample.disp = displayText();
+    }
+    push(log.samples, sample);
   }, 200);
 
   function snap() {
@@ -240,18 +256,28 @@
     return all[spec.index || 0] || null;
   }
 
+  function usableOnScreen(el, fx) {
+    var rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (rect.top < 0 || rect.bottom > window.innerHeight || rect.left < 0 || rect.right > window.innerWidth) return false;
+    var hit = document.elementFromPoint(rect.left + rect.width * fx, rect.top + rect.height / 2);
+    return !!hit && (hit === el || el.contains(hit) || hit.contains(el));
+  }
+
   function target(spec) {
     var el = findTarget(spec);
     if (!el) return { found: false };
     var before = window.pageYOffset;
-    try {
-      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
-    } catch (e) {
-      el.scrollIntoView(true);
+    var fx = spec.fx === undefined ? 0.5 : spec.fx;
+    if (!usableOnScreen(el, fx)) {
+      try {
+        el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      } catch (e) {
+        el.scrollIntoView(true);
+      }
     }
     var scrolled = Math.abs(window.pageYOffset - before) > 1;
     var rect = el.getBoundingClientRect();
-    var fx = spec.fx === undefined ? 0.5 : spec.fx;
     return {
       found: true,
       scrolled: scrolled,
@@ -395,6 +421,7 @@
         input: pick(log.input),
         calls: pick(log.calls),
         mse: log.mse,
+        navMsAtInstall: T0,
       };
     },
   };
