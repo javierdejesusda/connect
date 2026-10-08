@@ -106,8 +106,12 @@ export function createPage(browser, { platform }) {
    */
   async function tap(spec) {
     const from = await now();
-    const target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+    let target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
     if (!target.found) throw new Error(`tap target not found: ${JSON.stringify(spec)}`);
+    if (target.scrolled) {
+      await browser.pause(500);
+      target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+    }
     let method = platform === 'ios' ? 'native-tap' : 'w3c-touch';
     if (platform === 'ios' && iosNativeWorks) {
       await nativeTap(target.x + iosOrigin.x, target.y + iosOrigin.y);

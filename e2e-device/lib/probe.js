@@ -243,11 +243,18 @@
   function target(spec) {
     var el = findTarget(spec);
     if (!el) return { found: false };
-    el.scrollIntoView({ block: 'center', inline: 'nearest' });
+    var before = window.pageYOffset;
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    } catch (e) {
+      el.scrollIntoView(true);
+    }
+    var scrolled = Math.abs(window.pageYOffset - before) > 1;
     var rect = el.getBoundingClientRect();
     var fx = spec.fx === undefined ? 0.5 : spec.fx;
     return {
       found: true,
+      scrolled: scrolled,
       x: r3(rect.left + rect.width * fx),
       y: r3(rect.top + rect.height / 2),
       left: r3(rect.left),
