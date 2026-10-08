@@ -6,6 +6,9 @@ import {
   classifySource,
   clockDelta,
   countWrites,
+  firstAdvanceAt,
+  lastSpinnerAt,
+  playingSteadily,
   landingTolerance,
   parseClockText,
   renderMarkdown,
@@ -176,5 +179,59 @@ describe('renderMarkdown', () => {
 
   it('never contains an em dash', () => {
     assert.ok(!renderMarkdown(results).includes(String.fromCharCode(0x2014)));
+  });
+});
+
+describe('firstAdvanceAt', () => {
+  it('finds the first sample where the video has moved past the first decoded frame', () => {
+    const samples = [
+      { t: 0, none: true },
+      { t: 200, ct: 0, rs: 0 },
+      { t: 400, ct: 0, rs: 2 },
+      { t: 600, ct: 0.1, rs: 3 },
+      { t: 800, ct: 0.4, rs: 4 },
+    ];
+    assert.deepEqual(firstAdvanceAt(samples, 0.25), { t: 800, ct: 0.4 });
+  });
+
+  it('returns null when the clock never moves', () => {
+    assert.equal(firstAdvanceAt([{ t: 0, ct: 0, rs: 2 }, { t: 900, ct: 0, rs: 2 }], 0.25), null);
+  });
+
+  it('ignores movement before a frame is decoded', () => {
+    assert.equal(firstAdvanceAt([{ t: 0, ct: 5, rs: 0 }, { t: 900, ct: 9, rs: 1 }], 0.25), null);
+  });
+});
+
+describe('lastSpinnerAt', () => {
+  it('returns the time of the last sample showing the spinner', () => {
+    const samples = [{ t: 1, spin: true }, { t: 2, spin: true }, { t: 3, spin: false }];
+    assert.equal(lastSpinnerAt(samples), 2);
+  });
+
+  it('returns null when it never showed', () => {
+    assert.equal(lastSpinnerAt([{ t: 1, spin: false }]), null);
+  });
+});
+
+describe('playingSteadily', () => {
+  const ok = (t, ct) => ({ t, ct, rs: 4, paused: false, seeking: false, spin: false });
+
+  it('is true for a run of unpaused, settled, moving samples', () => {
+    const run = [ok(0, 10), ok(300, 10.3), ok(600, 10.6), ok(900, 10.9), ok(1200, 11.2)];
+    assert.equal(playingSteadily(run, 1000, 0.5), true);
+  });
+
+  it('is false while seeking, paused or showing the spinner', () => {
+    const base = [ok(0, 10), ok(300, 10.3), ok(600, 10.6), ok(900, 10.9), ok(1200, 11.2)];
+    assert.equal(playingSteadily(base.map((s) => ({ ...s, seeking: true })), 1000, 0.5), false);
+    assert.equal(playingSteadily(base.map((s) => ({ ...s, paused: true })), 1000, 0.5), false);
+    assert.equal(playingSteadily(base.map((s) => ({ ...s, spin: true })), 1000, 0.5), false);
+  });
+
+  it('is false when the clock does not move or the run is too short', () => {
+    const flat = [ok(0, 10), ok(300, 10), ok(600, 10), ok(900, 10), ok(1200, 10)];
+    assert.equal(playingSteadily(flat, 1000, 0.5), false);
+    assert.equal(playingSteadily([ok(0, 10), ok(300, 10.3)], 1000, 0.1), false);
   });
 });

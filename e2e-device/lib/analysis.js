@@ -91,6 +91,61 @@ export function advanceOver(samples) {
 }
 
 /**
+ * Finds the moment the first frame is on screen and the video is moving.
+ *
+ * The first decoded sample (readyState 2 or more) is the baseline; the answer
+ * is the first later sample whose media time is `minDelta` seconds past it.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @param {number} minDelta Media seconds the clock must have moved.
+ * @return {?{t: number, ct: number}} Time and media time, or null.
+ */
+export function firstAdvanceAt(samples, minDelta) {
+  let base = null;
+  for (const sample of samples) {
+    if (typeof sample.ct !== 'number' || sample.rs < 2) continue;
+    if (base === null) {
+      base = sample;
+    } else if (sample.ct - base.ct >= minDelta) {
+      return { t: sample.t, ct: sample.ct };
+    }
+  }
+  return null;
+}
+
+/**
+ * Time of the last sample that showed the loading spinner over the video.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @return {?number} Probe milliseconds, or null when it never showed.
+ */
+export function lastSpinnerAt(samples) {
+  let last = null;
+  for (const sample of samples) {
+    if (sample.spin) last = sample.t;
+  }
+  return last;
+}
+
+/**
+ * Whether every sample in a run shows settled, unpaused, moving playback.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @param {number} minSpanMs Shortest wall time the run must cover.
+ * @param {number} minDelta Media seconds the clock must have moved.
+ * @return {boolean} True when playback is steady across the run.
+ */
+export function playingSteadily(samples, minSpanMs, minDelta) {
+  if (samples.length < 2) return false;
+  const first = samples[0];
+  const last = samples[samples.length - 1];
+  if (last.t - first.t < minSpanMs) return false;
+  const settled = samples.every((s) => typeof s.ct === 'number' && s.rs >= 2
+    && !s.paused && !s.seeking && !s.spin);
+  return settled && last.ct - first.ct >= minDelta;
+}
+
+/**
  * Reads the HH:mm:ss part of the TimeDisplay text as seconds of the day.
  *
  * @param {?string} text Text such as "18:30:34 - 0".
