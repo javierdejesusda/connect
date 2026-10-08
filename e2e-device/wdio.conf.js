@@ -7,6 +7,7 @@ function iosCapabilities() {
   const caps = {
     platformName: 'iOS',
     browserName: 'Safari',
+    'wdio:enforceWebDriverClassic': true,
     'appium:automationName': 'XCUITest',
     'appium:deviceName': env.DEVICE_NAME,
     'appium:platformVersion': env.IOS_VERSION,
@@ -30,6 +31,7 @@ function androidCapabilities() {
   return {
     platformName: 'Android',
     browserName: 'Chrome',
+    'wdio:enforceWebDriverClassic': true,
     'appium:automationName': 'UiAutomator2',
     'appium:deviceName': 'Android Emulator',
     'appium:newCommandTimeout': 300,
