@@ -231,6 +231,87 @@ export function withinWallTime(displayedDelta, wallSeconds, tolerance) {
 }
 
 /**
+ * Corrects a delta of a looping clock that jumped back to the range start.
+ *
+ * @param {?number} delta Seconds the clock moved, negative after a wrap.
+ * @param {number} span Length of the loop in seconds.
+ * @return {?number} The delta with the wrap added back, or null.
+ */
+export function wrapDelta(delta, span) {
+  if (delta === null || delta === undefined) return null;
+  return delta < -span / 2 ? delta + span : delta;
+}
+
+/**
+ * Like advanceOver, for a playback that loops inside a time range: a jump back
+ * of more than half the loop is the wrap at the range end, not a seek.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @param {number} span Length of the loop in seconds.
+ * @return {{delta: number, wallSeconds: number}} Media and wall seconds.
+ */
+export function loopAdvance(samples, span) {
+  const withVideo = samples.filter((s) => typeof s.ct === 'number');
+  if (withVideo.length < 2) return { delta: 0, wallSeconds: 0 };
+  let total = 0;
+  for (let i = 1; i < withVideo.length; i += 1) {
+    total += wrapDelta(withVideo[i].ct - withVideo[i - 1].ct, span);
+  }
+  const first = withVideo[0];
+  const last = withVideo[withVideo.length - 1];
+  return { delta: round(total), wallSeconds: round((last.t - first.t) / 1000) };
+}
+
+/**
+ * Whether the first media time seen on a deep link fits a playback that began
+ * at the range start. The probe cannot be installed before the page loads, so
+ * the first reading may be late: it may be ahead of the range start by at most
+ * the time elapsed since navigation, unless a whole loop could have passed.
+ *
+ * @param {{ct: ?number, elapsedSeconds: number, rangeStart: number,
+ *     rangeEnd: number, tolerance: number}} reading First reading and range.
+ * @return {boolean} True when the reading is consistent with a start at the
+ *     range start.
+ */
+export function startConsistent({ ct, elapsedSeconds, rangeStart, rangeEnd, tolerance }) {
+  if (typeof ct !== 'number') return false;
+  if (ct < rangeStart - tolerance || ct > rangeEnd + tolerance) return false;
+  if (elapsedSeconds >= rangeEnd - rangeStart) return true;
+  return ct - rangeStart <= elapsedSeconds + tolerance;
+}
+
+/**
+ * Condenses samples into one readable line per step, to show what a stall
+ * looked like (media time, ready state, network state, paused, spinner).
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @param {number} fromT Probe milliseconds the trace is relative to.
+ * @param {number} stepMs Minimum spacing between lines.
+ * @return {string[]} Trace lines.
+ */
+export function sampleTrace(samples, fromT, stepMs) {
+  const lines = [];
+  let nextAt = -Infinity;
+  for (const s of samples) {
+    if (s.t < nextAt) continue;
+    nextAt = s.t + stepMs;
+    const parts = [`+${round((s.t - fromT) / 1000, 1).toFixed(1)}s`];
+    if (s.none) {
+      parts.push('no video');
+    } else {
+      parts.push(`ct=${s.ct}`, `rs=${s.rs}`, `ns=${s.ns}`, s.paused ? 'paused' : 'play');
+      if (s.rate !== 1) parts.push(`rate=${s.rate}`);
+      if (s.seeking) parts.push('seeking');
+      if (s.spin) parts.push('spin');
+      if (s.buf !== undefined && s.buf !== null) parts.push(`buf=${s.buf}`);
+      if (s.disp) parts.push(`disp=${s.disp}`);
+    }
+    lines.push(parts.join(' '));
+  }
+  return lines;
+}
+
+/**
  * Maps the aria-label of the play button to the state it announces.
  *
  * @param {?string} label "Pause" while playing, "Unpause" while paused.

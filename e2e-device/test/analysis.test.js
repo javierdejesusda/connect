@@ -8,7 +8,11 @@ import {
   countWrites,
   firstAdvanceAt,
   keepsAdvancing,
+  loopAdvance,
+  sampleTrace,
+  startConsistent,
   withinWallTime,
+  wrapDelta,
   lastSpinnerAt,
   playingSteadily,
   landingTolerance,
@@ -262,5 +266,77 @@ describe('withinWallTime', () => {
     assert.equal(withinWallTime(9, 9.2, 2.5), true);
     assert.equal(withinWallTime(4, 9.2, 2.5), false);
     assert.equal(withinWallTime(null, 9, 2.5), false);
+  });
+});
+
+describe('wrapDelta', () => {
+  it('adds the loop length when a clock jumped back to the start of the range', () => {
+    assert.equal(wrapDelta(-6, 10), 4);
+    assert.equal(wrapDelta(3.8, 10), 3.8);
+    assert.equal(wrapDelta(-2, 10), -2);
+    assert.equal(wrapDelta(null, 10), null);
+  });
+});
+
+describe('loopAdvance', () => {
+  const at = (t, ct) => ({ t, ct });
+
+  it('counts a wrap at the end of a looped range as forward motion', () => {
+    const samples = [at(0, 18), at(1000, 19), at(2000, 10.1), at(3000, 11.1)];
+    assert.equal(loopAdvance(samples, 10).delta, 3.1);
+  });
+
+  it('matches advanceOver when nothing wraps', () => {
+    const samples = [at(0, 12), at(2000, 14), at(4000, 15.9)];
+    assert.equal(loopAdvance(samples, 10).delta, 3.9);
+  });
+
+  it('does not hide a real seek back inside the range', () => {
+    const samples = [at(0, 18), at(1000, 17.8)];
+    assert.equal(loopAdvance(samples, 10).delta, -0.2);
+  });
+});
+
+describe('startConsistent', () => {
+  const range = { rangeStart: 10, rangeEnd: 20, tolerance: 1.5 };
+
+  it('accepts a first reading just past the range start', () => {
+    assert.equal(startConsistent({ ct: 10.2, elapsedSeconds: 3, ...range }), true);
+  });
+
+  it('accepts a late first reading when the elapsed time explains it', () => {
+    assert.equal(startConsistent({ ct: 15.8, elapsedSeconds: 7, ...range }), true);
+  });
+
+  it('rejects a first reading further along than the elapsed time allows', () => {
+    assert.equal(startConsistent({ ct: 15.8, elapsedSeconds: 2, ...range }), false);
+  });
+
+  it('rejects a reading before the range start or past its end', () => {
+    assert.equal(startConsistent({ ct: 4, elapsedSeconds: 30, ...range }), false);
+    assert.equal(startConsistent({ ct: 25, elapsedSeconds: 30, ...range }), false);
+  });
+
+  it('accepts any position inside the range once a whole loop could have elapsed', () => {
+    assert.equal(startConsistent({ ct: 19, elapsedSeconds: 14, ...range }), true);
+  });
+});
+
+describe('sampleTrace', () => {
+  const sample = (t, over = {}) => ({ t, ct: 100 + t / 1000, rs: 4, ns: 2, paused: false, seeking: false, spin: false, rate: 1, ...over });
+
+  it('keeps one compact line per step with the state that explains a stall', () => {
+    const samples = [
+      sample(1000), sample(1200), sample(2100, { spin: true, rs: 1 }), sample(3200, { paused: true }),
+    ];
+    const trace = sampleTrace(samples, 1000, 1000);
+    assert.equal(trace.length, 3);
+    assert.match(trace[0], /^\+0\.0s ct=101 rs=4 ns=2 play/);
+    assert.match(trace[1], /^\+1\.1s .* rs=1 .* spin/);
+    assert.match(trace[2], /paused/);
+  });
+
+  it('returns nothing for an empty run', () => {
+    assert.deepEqual(sampleTrace([], 0, 1000), []);
   });
 });
