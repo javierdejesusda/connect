@@ -7,6 +7,7 @@ import {
   clockDelta,
   countWrites,
   displayAdvance,
+  displayAdvanceOk,
   keepsAdvancing,
   landingTolerance,
   lastSpinnerAt,
@@ -528,6 +529,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
           snapRoundTripMs: [wallAfterSnap0 - wallBeforeSnap0, wallAfterSnap1 - wallAfterPause],
           pauseWallMs: wallAfterPause - wallAfterSnap0,
           displayAdvanceInPageS: displayAdvance(log.samples.filter((x) => x.t <= frame.advance.t + 4000), span),
+          shownAdvanceBetweenSnapsS: shownAdvance,
         };
         for (const [key, value] of Object.entries(timing)) s.measure(`${label}.${key}`, value);
         if (observedStart) {
@@ -542,7 +544,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
             shown, `7..${RANGE_END}, at most ${RANGE_START} + elapsed`);
         }
         s.check(`${label}: advances after the deep link start (the 10 to 20 s range loops)`, adv.delta >= 2.5, adv.delta, '>= 2.5 in 4 s');
-        s.check(`${label}: reported time advances`, shownAdvance !== null && shownAdvance >= 2, shownAdvance, '>= 2');
+        s.check(`${label}: reported time advances`, displayAdvanceOk(timing.displayAdvanceInPageS, 2), timing.displayAdvanceInPageS, '>= 2');
         s.check(`${label}: playing and no stuck spinner`, snap1.video && !snap1.video.paused && !snap1.video.spinner,
           snap1.video ? `${snap1.video.paused}/${snap1.video.spinner}` : 'no video', 'false/false');
         await recordWindowSince(s, label, 0, timing);

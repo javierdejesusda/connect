@@ -288,6 +288,18 @@ export function displayAdvance(samples, span) {
 }
 
 /**
+ * Whether the on-screen clock moved far enough according to the probe's own
+ * samples. A missing reading (null) is never an advance.
+ *
+ * @param {?number} advance Result of displayAdvance.
+ * @param {number} minSeconds Least movement that counts.
+ * @return {boolean} True when the display advanced by at least `minSeconds`.
+ */
+export function displayAdvanceOk(advance, minSeconds) {
+  return typeof advance === 'number' && advance >= minSeconds;
+}
+
+/**
  * Whether the first media time seen on a deep link fits a playback that began
  * at the range start. The probe cannot be installed before the page loads, so
  * the first reading may be late: it may be ahead of the range start by at most

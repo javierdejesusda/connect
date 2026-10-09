@@ -153,6 +153,43 @@ describe('displayAdvance', () => {
     assert.equal(analysis.displayAdvance([shown(40)], 10), null);
     assert.equal(analysis.displayAdvance([], 10), null);
   });
+
+  it('counts the iPad run 8 deep link as moving: 16 to 20, then the loop back to 10 and 11', () => {
+    const samples = [16, 17, 18, 19, 20, 10, 11].map(shown);
+    const advance = analysis.displayAdvance(samples, 10);
+    assert.equal(advance, 5);
+    assert.equal(analysis.displayAdvanceOk(advance, 2), true);
+  });
+
+  it('counts a loop wrap between two once-per-second readings as one second of motion', () => {
+    const samples = [17, 18, 19, 10, 11].map(shown);
+    assert.equal(analysis.displayAdvance(samples, 10), 4);
+  });
+
+  it('fails a display that stood still for the whole window', () => {
+    const advance = analysis.displayAdvance([16, 16, 16, 16, 16].map(shown), 10);
+    assert.equal(advance, 0);
+    assert.equal(analysis.displayAdvanceOk(advance, 2), false);
+  });
+});
+
+describe('displayAdvanceOk', () => {
+  it('passes from the minimum upwards', () => {
+    assert.equal(analysis.displayAdvanceOk(2, 2), true);
+    assert.equal(analysis.displayAdvanceOk(3.5, 2), true);
+  });
+
+  it('fails below the minimum', () => {
+    assert.equal(analysis.displayAdvanceOk(1.9, 2), false);
+    assert.equal(analysis.displayAdvanceOk(0, 2), false);
+    assert.equal(analysis.displayAdvanceOk(-5, 2), false);
+  });
+
+  it('never passes a missing reading', () => {
+    assert.equal(analysis.displayAdvanceOk(null, 2), false);
+    assert.equal(analysis.displayAdvanceOk(undefined, 2), false);
+    assert.equal(analysis.displayAdvanceOk(Number.NaN, 2), false);
+  });
 });
 
 describe('windowDiagnostics', () => {
