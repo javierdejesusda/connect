@@ -22,6 +22,41 @@ const HIT_TOLERANCE_PX = 14;
 export function createPage(browser, { platform }) {
   let iosOrigin = { x: 0, y: 0 };
   let iosNativeWorks = true;
+  const trips = [];
+  const carriedLag = [];
+
+  async function timed(call, trivial = false) {
+    const started = performance.now();
+    try {
+      return await call();
+    } finally {
+      trips.push({ ms: performance.now() - started, trivial });
+    }
+  }
+
+  const run = (script, ...args) => timed(() => browser.execute(script, ...args));
+
+  async function flushLag() {
+    try {
+      carriedLag.push(...await browser.execute('return window.__ev ? window.__ev.drainLag() : [];'));
+    } catch {
+      // No page or no probe to read from: there is no lag to keep.
+    }
+  }
+
+  /**
+   * Hands over the round trips of the page helper calls and the main thread lag
+   * seen since the last call, then starts counting again. The probe install,
+   * the navigation checks and the native tap command are not counted.
+   *
+   * @return {Promise<{trips: {ms: number, trivial: boolean}[], lag: number[]}>}
+   *     Round trips in milliseconds (trivial ones are clock reads) and timer
+   *     drift samples in milliseconds.
+   */
+  async function drainResponsiveness() {
+    await flushLag();
+    return { trips: trips.splice(0), lag: carriedLag.splice(0) };
+  }
 
   async function installProbe() {
     return browser.execute(`${PROBE_SOURCE}\nreturn window.__ev.info();`);
@@ -34,6 +69,7 @@ export function createPage(browser, { platform }) {
 
   async function open(url) {
     const origin = new URL(url).origin;
+    await flushLag();
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       await browser.url(url);
       const href = await browser.execute('return location.href;');
@@ -43,10 +79,10 @@ export function createPage(browser, { platform }) {
     return installProbe();
   }
 
-  const now = () => browser.execute('return window.__ev.now();');
-  const diag = () => browser.execute('return window.__ev.diag();');
-  const snap = () => browser.execute('return window.__ev.snap();');
-  const logSince = (from) => browser.execute('return window.__ev.log(arguments[0]);', from);
+  const now = () => timed(() => browser.execute('return window.__ev.now();'), true);
+  const diag = () => run('return window.__ev.diag();');
+  const snap = () => run('return window.__ev.snap();');
+  const logSince = (from) => run('return window.__ev.log(arguments[0]);', from);
 
   async function waitFor(condition, { timeout, interval = 400 }) {
     const start = Date.now();
@@ -72,14 +108,14 @@ export function createPage(browser, { platform }) {
   }
 
   async function calibrateIos() {
-    const pad = await browser.execute('return window.__ev.calibrate();');
+    const pad = await run('return window.__ev.calibrate();');
     const from = await now();
     const cx = pad.width / 2;
     const cy = pad.height / 2;
     await nativeTap(cx + iosOrigin.x, cy + iosOrigin.y);
     await browser.pause(300);
     const log = await logSince(from);
-    await browser.execute('window.__ev.endCalibration();');
+    await run('window.__ev.endCalibration();');
     const down = log.input.find((e) => e.trusted && (e.type === 'pointerdown' || e.type === 'touchstart'));
     if (!down) {
       iosNativeWorks = false;
@@ -106,12 +142,12 @@ export function createPage(browser, { platform }) {
    * @return {Promise<Object>} How the tap was delivered and where it landed.
    */
   async function tap(spec) {
-    let target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+    let target = await run('return window.__ev.target(arguments[0]);', spec);
     if (!target.found) throw new Error(`tap target not found: ${JSON.stringify(spec)}`);
     if (target.scrolled) {
       await browser.pause(500);
       if (platform === 'ios' && iosNativeWorks) await calibrateIos();
-      target = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+      target = await run('return window.__ev.target(arguments[0]);', spec);
     }
     const from = await now();
     let method = platform === 'ios' ? 'native-tap' : 'w3c-touch';
@@ -127,7 +163,7 @@ export function createPage(browser, { platform }) {
       const calibration = await calibrateIos();
       method = `native-tap-recalibrated(${calibration.ok})`;
       if (calibration.ok) {
-        const retargeted = await browser.execute('return window.__ev.target(arguments[0]);', spec);
+        const retargeted = await run('return window.__ev.target(arguments[0]);', spec);
         target = retargeted;
         await nativeTap(retargeted.x + iosOrigin.x, retargeted.y + iosOrigin.y);
         await browser.pause(150);
@@ -136,7 +172,7 @@ export function createPage(browser, { platform }) {
       }
     }
     if (trusted.length === 0) {
-      await browser.execute('return window.__ev.syntheticTap(arguments[0]);', spec);
+      await run('return window.__ev.syntheticTap(arguments[0]);', spec);
       return { method: 'synthetic-fallback', trusted: false, target, from };
     }
     const down = trusted.find((e) => e.type === 'pointerdown' || e.type === 'touchstart') || trusted[0];
@@ -191,6 +227,7 @@ export function createPage(browser, { platform }) {
     holdUntil,
     tap,
     startCalibration,
+    drainResponsiveness,
     iosOrigin: () => iosOrigin,
   };
 }

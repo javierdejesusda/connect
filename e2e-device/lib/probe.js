@@ -5,7 +5,8 @@
  *
  * It wraps the currentTime and playbackRate setters of HTMLMediaElement and
  * records each write with a timestamp, its value and the calling file. It also
- * logs media events, user input events and a 200 ms sample of the video.
+ * logs media events, user input events, a 200 ms sample of the video and the
+ * drift of a 100 ms timer, which shows how long the main thread was busy.
  */
 (function () {
   if (window.__ev) return;
@@ -20,6 +21,7 @@
     events: [],
     input: [],
     samples: [],
+    lag: [],
     mse: { mediaSource: 0, managedMediaSource: 0 },
   };
 
@@ -97,8 +99,9 @@
   });
 
   [
-    'loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'playing', 'waiting', 'seeking',
-    'seeked', 'play', 'pause', 'ended', 'error', 'stalled', 'ratechange', 'emptied', 'abort',
+    'loadstart', 'loadedmetadata', 'loadeddata', 'canplay', 'canplaythrough', 'playing', 'waiting',
+    'seeking', 'seeked', 'play', 'pause', 'ended', 'error', 'stalled', 'suspend', 'ratechange',
+    'emptied', 'abort',
   ].forEach(function (name) {
     document.addEventListener(name, function (e) {
       var el = e.target;
@@ -108,9 +111,11 @@
         type: name,
         ct: r3(el.currentTime),
         rs: el.readyState,
+        ns: el.networkState,
         paused: el.paused,
+        rate: el.playbackRate,
       });
-    }, true);
+    }, { capture: true, passive: true });
   });
 
   function describe(el) {
@@ -207,6 +212,14 @@
     }
     push(log.samples, sample);
   }, 200);
+
+  var LAG_INTERVAL_MS = 100;
+  var lagFrom = performance.now();
+  setInterval(function () {
+    var t = performance.now();
+    push(log.lag, Math.max(0, Math.round((t - lagFrom - LAG_INTERVAL_MS) * 10) / 10));
+    lagFrom = t;
+  }, LAG_INTERVAL_MS);
 
   function snap() {
     var video = videoEl();
@@ -409,6 +422,9 @@
     syntheticTap: syntheticTap,
     calibrate: calibrate,
     endCalibration: endCalibration,
+    drainLag: function () {
+      return log.lag.splice(0);
+    },
     log: function (from) {
       var pick = function (list) {
         return list.filter(function (e) { return e.t >= from; });

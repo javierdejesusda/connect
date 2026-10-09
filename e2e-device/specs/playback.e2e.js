@@ -17,6 +17,8 @@ import {
   speedAdvanceOk,
   startConsistent,
   stateFromLabel,
+  summarizeResponsiveness,
+  windowDiagnostics,
   withinWallTime,
   wrapDelta,
 } from '../lib/analysis.js';
@@ -50,6 +52,7 @@ const recorder = createRecorder({
     os: env.OS_LABEL || PLATFORM,
     target: TARGET_URL,
   },
+  afterStep: recordResponsiveness,
 });
 const page = createPage(browser, { platform: PLATFORM });
 
@@ -68,6 +71,31 @@ async function recordDiagnostics(s, label) {
     s.measure(`${label}.diagnostics`, await page.diag());
   } catch (error) {
     s.measure(`${label}.diagnostics`, `unavailable: ${error.message}`);
+  }
+}
+
+async function recordResponsiveness(s) {
+  try {
+    s.diagnose('responsiveness', summarizeResponsiveness(await page.drainResponsiveness()));
+  } catch (error) {
+    s.diagnose('responsiveness', `unavailable: ${error.message}`);
+  }
+}
+
+function recordWindow(s, name, log, fromT, toT) {
+  try {
+    s.diagnoseWindow(name, windowDiagnostics(log, fromT, toT));
+  } catch (error) {
+    s.diagnoseWindow(name, `unavailable: ${error.message}`);
+  }
+}
+
+async function recordWindowSince(s, name, fromT) {
+  try {
+    const log = await page.logSince(fromT);
+    recordWindow(s, name, log, fromT, log.t);
+  } catch (error) {
+    s.diagnoseWindow(name, `unavailable: ${error.message}`);
   }
 }
 
@@ -136,6 +164,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
     await listReady();
     await page.startCalibration();
     state.info = info;
+    await page.drainResponsiveness();
   });
 
   after(async () => {
@@ -210,6 +239,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
       s.measure('waitingEvents', waits);
       s.measure('spinnerSamples', spinnerSamples);
       s.measure('writeSites', win.writes.slice(0, 5).map((w) => `${w.prop}:${w.source}:${w.site[0] || ''}`));
+      recordWindow(s, 'steady 10 s', log, startT, startT + STEADY_MS);
       s.check('0 writes to currentTime', writes.currentTime === 0, writes.currentTime, 0);
       s.check('0 writes to playbackRate', writes.playbackRate === 0, writes.playbackRate, 0);
       s.check('media clock advances at about 1x', speedAdvanceOk(1, adv.wallSeconds, adv.delta), adv.delta, `~${adv.wallSeconds}`);
@@ -253,6 +283,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         }
         s.measure(`${label}.writes`, writes);
         s.measure(`${label}.writeSites`, sliceLog(log, clickT, settledT).writes.slice(0, 4).map((w) => `${w.prop}:${w.source}:${w.site[0] || ''}`));
+        recordWindow(s, label, log, clickT, settledT);
         s.check(`${label}: playback resumed within ${RESUME_TIMEOUT} ms`, steady !== null, steady !== null, true);
         s.check(`${label}: seeked event fired`, seeked !== undefined, seeked !== undefined, true);
         s.check(`${label}: landed within ${tol.toFixed(1)} s of the clicked position`,
@@ -289,6 +320,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
       s.measure(`${label}.currentTimeS`, snap.video.ct);
       s.measure(`${label}.movedInLast2sS`, moved);
       s.measure(`${label}.writes`, writes);
+      recordWindow(s, label, log, clickT, log.t);
       s.check(`${label}: stays paused (element)`, snap.video.paused === true, snap.video.paused, true);
       s.check(`${label}: stays paused (button says Unpause)`, stateFromLabel(snap.playLabel) === true, snap.playLabel, 'Unpause');
       s.check(`${label}: frame loaded at the new position`, snap.video.rs >= 2 && !snap.video.seeking, `rs=${snap.video.rs} seeking=${snap.video.seeking}`, 'rs>=2, not seeking');
@@ -464,6 +496,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         const frame = await page.waitForFirstFrame(sinceT, FIRST_FRAME_TIMEOUT, 0.25);
         s.measure(`${label}.videoPresentAtInstall`, info.videoPresentAtInstall);
         if (!frame) await recordDiagnostics(s, label);
+        if (!frame) await recordWindowSince(s, label, 0);
         s.check(`${label}: first frame within ${FIRST_FRAME_TIMEOUT} ms`, frame !== null, frame ? Math.round(frame.advance.t) : null, `<= ${FIRST_FRAME_TIMEOUT}`);
         if (!frame) continue;
         const startCt = frame.advance.ct;
@@ -500,6 +533,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         s.check(`${label}: reported time advances`, shownAdvance !== null && shownAdvance >= 2, shownAdvance, '>= 2');
         s.check(`${label}: playing and no stuck spinner`, snap1.video && !snap1.video.paused && !snap1.video.spinner,
           snap1.video ? `${snap1.video.paused}/${snap1.video.spinner}` : 'no video', 'false/false');
+        await recordWindowSince(s, label, 0);
       }
     });
   });

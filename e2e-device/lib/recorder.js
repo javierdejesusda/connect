@@ -7,11 +7,13 @@ import { renderMarkdown } from './analysis.js';
  * Collects per-step measurements and assertions and writes results.json and
  * results.md after every step, so a crash keeps what was measured so far.
  *
- * @param {{outDir: string, meta: Object}} options Output directory and the
- *     fixed fields of the report (job, device, os, target, label).
+ * @param {{outDir: string, meta: Object, afterStep: ?function(Object):
+ *     Promise<void>}} options Output directory, the fixed fields of the report
+ *     (job, device, os, target, label) and an optional hook that records
+ *     diagnostics once a step body is done. The hook cannot change a verdict.
  * @return {Object} Recorder with runStep, skip, fact, results and save.
  */
-export function createRecorder({ outDir, meta }) {
+export function createRecorder({ outDir, meta, afterStep }) {
   mkdirSync(outDir, { recursive: true });
   const results = {
     ...meta,
@@ -65,6 +67,15 @@ export function createRecorder({ outDir, meta }) {
       input(record) {
         if (record && !step.inputs.includes(record.method)) step.inputs.push(record.method);
       },
+      diagnose(key, value) {
+        step.diagnostics = step.diagnostics || {};
+        step.diagnostics[key] = value;
+      },
+      diagnoseWindow(name, value) {
+        step.diagnostics = step.diagnostics || {};
+        step.diagnostics.windows = step.diagnostics.windows || {};
+        step.diagnostics.windows[name] = value;
+      },
       log(message) {
         console.log(`[${id}] ${message}`);
       },
@@ -75,6 +86,13 @@ export function createRecorder({ outDir, meta }) {
       api.check('step ran without error', false, String(error && error.message), 'no error');
     }
     step.durationMs = Date.now() - started;
+    if (afterStep) {
+      try {
+        await afterStep(api);
+      } catch (error) {
+        console.log(`[${id}] diagnostics hook failed: ${error && error.message}`);
+      }
+    }
     if (step.assertions.some((a) => !a.ok)) step.status = 'fail';
     if (step.inputs.length > 0) step.measured.input = step.inputs.join(',');
     save();

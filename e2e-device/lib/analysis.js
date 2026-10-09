@@ -7,6 +7,10 @@
 const SECONDS_PER_DAY = 86400;
 const POINTER_ERROR_PX = 3;
 const LANDING_SLACK_SECONDS = 3;
+const DETAIL_CAP = 200;
+const TRACE_CAP = 60;
+const WRITE_SUMMARY_CHARS = 140;
+const MIN_TRACE_SPACING_MS = 500;
 
 /**
  * Attributes a media element write to hls.js or to the app.
@@ -312,6 +316,160 @@ export function sampleTrace(samples, fromT, stepMs) {
 }
 
 /**
+ * Condenses samples into the once-per-second trace used by the diagnostics.
+ * Only the samples that carry the end of the buffered range are kept, so each
+ * line shows media time, ready and network state, paused, seeking, playback
+ * rate and the buffered end. Defaults (rate 1, not seeking) are left out.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time.
+ * @param {number} fromT Probe milliseconds the trace is relative to.
+ * @return {string[]} Trace lines.
+ */
+export function stateTrace(samples, fromT) {
+  const perSecond = samples
+    .filter((s) => s.none || s.buf !== undefined)
+    .map((s) => (s.buf === null ? { ...s, buf: 'none' } : s));
+  return sampleTrace(perSecond, fromT, MIN_TRACE_SPACING_MS);
+}
+
+/**
+ * Median and maximum of a list of durations.
+ *
+ * @param {number[]} values Durations in milliseconds.
+ * @return {{n: number, median: ?number, max: ?number}} Count, median and max
+ *     rounded to 0.1, null when there are no values.
+ */
+export function summarizeValues(values) {
+  if (values.length === 0) return { n: 0, median: null, max: null };
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return { n: sorted.length, median: round(median, 1), max: round(sorted[sorted.length - 1], 1) };
+}
+
+/**
+ * Summarizes how responsive the page was during one scenario.
+ *
+ * @param {{trips: {ms: number, trivial: boolean}[], lag: number[]}} raw Round
+ *     trips of the WebDriver execute calls and drift of the in-page timer.
+ * @return {Object} Statistics for all round trips, the trivial ones (clock
+ *     reads) and the page lag.
+ */
+export function summarizeResponsiveness({ trips, lag }) {
+  return {
+    roundTripMs: summarizeValues(trips.map((trip) => trip.ms)),
+    trivialRoundTripMs: summarizeValues(trips.filter((trip) => trip.trivial).map((trip) => trip.ms)),
+    pageLagMs: summarizeValues(lag),
+  };
+}
+
+/**
+ * One line for a write to a media element setter.
+ *
+ * @param {Object} write Probe write record.
+ * @param {number} fromT Probe milliseconds the line is relative to.
+ * @return {string} Line such as "+204 playbackRate=0 (was 1) app file.js:12".
+ */
+export function formatWrite(write, fromT) {
+  const parts = [
+    `+${Math.round(write.t - fromT)}`,
+    `${write.prop}=${round(write.value)}`,
+    `(was ${round(write.from)})`,
+    write.source,
+  ];
+  if (write.site.length > 0) parts.push(write.site.join(' < '));
+  return parts.join(' ');
+}
+
+/**
+ * One line for a media event with the state of the element at that moment.
+ *
+ * @param {Object} event Probe event record.
+ * @param {number} fromT Probe milliseconds the line is relative to.
+ * @return {string} Line such as "+204 seeking ct=55.2 rs=1 ns=2 play rate=1".
+ */
+export function formatEvent(event, fromT) {
+  return [
+    `+${Math.round(event.t - fromT)}`,
+    event.type,
+    `ct=${event.ct}`,
+    `rs=${event.rs}`,
+    `ns=${event.ns}`,
+    event.paused ? 'paused' : 'play',
+    `rate=${event.rate}`,
+  ].join(' ');
+}
+
+/**
+ * Counts media events per type, in order of first appearance.
+ *
+ * @param {Object[]} events Probe event records.
+ * @return {Object} Count per event type.
+ */
+export function countEvents(events) {
+  const counts = {};
+  for (const event of events) counts[event.type] = (counts[event.type] || 0) + 1;
+  return counts;
+}
+
+/**
+ * Bounds a log: keeps the first entries and says how many were left out.
+ *
+ * @param {string[]} list Log lines.
+ * @param {number} max Most entries to keep.
+ * @return {string[]} The list, or its first `max` entries plus a marker.
+ */
+export function capEntries(list, max) {
+  if (list.length <= max) return list;
+  return [...list.slice(0, max), `... ${list.length - max} more`];
+}
+
+/**
+ * Compact writes line such as "playbackRate=0@204 currentTime=55.2@1000",
+ * cut at a whole write once it passes `maxChars`.
+ *
+ * @param {Object[]} writes Probe write records, ordered by time.
+ * @param {number} fromT Probe milliseconds the offsets are relative to.
+ * @param {number} maxChars Most characters of writes to list.
+ * @return {string} The line, "none" for no writes, "...+N" for the cut ones.
+ */
+export function summarizeWrites(writes, fromT, maxChars) {
+  if (writes.length === 0) return 'none';
+  const tokens = writes.map((w) => `${w.prop}=${round(w.value)}@${Math.round(w.t - fromT)}`);
+  let text = '';
+  let kept = 0;
+  for (const token of tokens) {
+    const next = kept === 0 ? token : `${text} ${token}`;
+    if (next.length > maxChars) break;
+    text = next;
+    kept += 1;
+  }
+  const rest = tokens.length - kept;
+  return rest > 0 ? `${text} ...+${rest}`.trim() : text;
+}
+
+/**
+ * Everything the probe saw inside one window: the ordered writes and media
+ * events, the once-per-second state trace and compact summaries of both.
+ *
+ * @param {Object} log Probe log with samples, writes and events.
+ * @param {number} fromT Window start in probe milliseconds, inclusive.
+ * @param {number} toT Window end in probe milliseconds, exclusive.
+ * @return {Object} Bounded, printable diagnostics for the window.
+ */
+export function windowDiagnostics(log, fromT, toT) {
+  const win = sliceLog(log, fromT, toT);
+  return {
+    spanMs: Math.round(toT - fromT),
+    eventCounts: countEvents(win.events),
+    writeSummary: summarizeWrites(win.writes, fromT, WRITE_SUMMARY_CHARS),
+    writes: capEntries(win.writes.map((w) => formatWrite(w, fromT)), DETAIL_CAP),
+    events: capEntries(win.events.map((e) => formatEvent(e, fromT)), DETAIL_CAP),
+    trace: capEntries(stateTrace(win.samples, fromT), TRACE_CAP),
+  };
+}
+
+/**
  * Maps the aria-label of the play button to the state it announces.
  *
  * @param {?string} label "Pause" while playing, "Unpause" while paused.
@@ -343,6 +501,44 @@ function formatMeasured(measured) {
     .map(([key, value]) => `${key}=${typeof value === 'object' ? JSON.stringify(value) : value}`)
     .join(', ')
     .replace(/\|/g, '/');
+}
+
+const DIAGNOSTICS_NOTE = 'Values are median/max. Round trip is a WebDriver execute call, '
+  + 'trivial is the clock read alone, lag is the drift of an in-page 100 ms timer. '
+  + 'Writes are prop=value@ms from the start of each window. '
+  + 'The ordered logs and 1 Hz traces are in results.json under steps[].diagnostics.';
+
+function formatStats(label, stats) {
+  return !stats || stats.n === 0 ? `${label} n/a` : `${label} ${stats.median}/${stats.max} ms (n=${stats.n})`;
+}
+
+function formatCounts(counts = {}) {
+  const entries = Object.entries(counts);
+  return entries.length === 0 ? 'none' : entries.map(([type, n]) => `${type}:${n}`).join(' ');
+}
+
+function formatResponsiveness(responsiveness) {
+  if (!responsiveness) return '';
+  if (typeof responsiveness === 'string') return ` ${responsiveness}`;
+  return ` ${formatStats('round trip', responsiveness.roundTripMs)}, ${formatStats('trivial', responsiveness.trivialRoundTripMs)}`
+    + `, ${formatStats('lag', responsiveness.pageLagMs)}`;
+}
+
+function formatWindow(name, detail) {
+  if (typeof detail === 'string') return `  - ${name}: ${detail}`;
+  return `  - ${name}: events ${formatCounts(detail.eventCounts)}; writes ${detail.writeSummary}`;
+}
+
+function diagnosticsLines(steps) {
+  const lines = [];
+  for (const step of steps) {
+    if (!step.diagnostics) continue;
+    lines.push(`- ${step.id}:${formatResponsiveness(step.diagnostics.responsiveness)}`);
+    for (const [name, detail] of Object.entries(step.diagnostics.windows || {})) {
+      lines.push(formatWindow(name, detail));
+    }
+  }
+  return lines;
 }
 
 /**
@@ -391,6 +587,15 @@ export function renderMarkdown(results) {
     lines.push('## Not covered');
     lines.push('');
     for (const step of skipped) lines.push(`- ${step.title}: ${step.reason}`);
+  }
+  const diagnostics = diagnosticsLines(results.steps);
+  if (diagnostics.length > 0) {
+    lines.push('');
+    lines.push('## Diagnostics');
+    lines.push('');
+    lines.push(DIAGNOSTICS_NOTE);
+    lines.push('');
+    lines.push(...diagnostics);
   }
   lines.push('');
   return lines.join('\n');
