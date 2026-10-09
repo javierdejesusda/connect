@@ -267,6 +267,27 @@ export function loopAdvance(samples, span) {
 }
 
 /**
+ * How far the on-screen clock moved across the display readings of a run of
+ * probe samples. The jump back at the end of a looped range is added back,
+ * like loopAdvance does for the media clock.
+ *
+ * @param {Object[]} samples Probe samples, ordered by time. Those that carry
+ *     the TimeDisplay text in `disp` count, the others are skipped.
+ * @param {number} span Length of the loop in seconds.
+ * @return {?number} Seconds the display moved, or null with fewer than two
+ *     readings.
+ */
+export function displayAdvance(samples, span) {
+  const clocks = samples.map((s) => parseClockText(s.disp)).filter((clock) => clock !== null);
+  if (clocks.length < 2) return null;
+  let total = 0;
+  for (let i = 1; i < clocks.length; i += 1) {
+    total += wrapDelta(clockDelta(clocks[i - 1], clocks[i]), span);
+  }
+  return total;
+}
+
+/**
  * Whether the first media time seen on a deep link fits a playback that began
  * at the range start. The probe cannot be installed before the page loads, so
  * the first reading may be late: it may be ahead of the range start by at most
@@ -455,11 +476,12 @@ export function summarizeWrites(writes, fromT, maxChars) {
  * @param {Object} log Probe log with samples, writes and events.
  * @param {number} fromT Window start in probe milliseconds, inclusive.
  * @param {number} toT Window end in probe milliseconds, exclusive.
+ * @param {Object=} extra Further measurements of the window to print with it.
  * @return {Object} Bounded, printable diagnostics for the window.
  */
-export function windowDiagnostics(log, fromT, toT) {
+export function windowDiagnostics(log, fromT, toT, extra) {
   const win = sliceLog(log, fromT, toT);
-  return {
+  const out = {
     spanMs: Math.round(toT - fromT),
     eventCounts: countEvents(win.events),
     writeSummary: summarizeWrites(win.writes, fromT, WRITE_SUMMARY_CHARS),
@@ -467,6 +489,8 @@ export function windowDiagnostics(log, fromT, toT) {
     events: capEntries(win.events.map((e) => formatEvent(e, fromT)), DETAIL_CAP),
     trace: capEntries(stateTrace(win.samples, fromT), TRACE_CAP),
   };
+  if (extra) out.extra = extra;
+  return out;
 }
 
 /**
@@ -524,9 +548,15 @@ function formatResponsiveness(responsiveness) {
     + `, ${formatStats('lag', responsiveness.pageLagMs)}`;
 }
 
+function formatExtra(extra) {
+  const entries = Object.entries(extra || {});
+  if (entries.length === 0) return '';
+  return `; ${entries.map(([key, value]) => `${key}=${Array.isArray(value) ? value.join('/') : value}`).join(' ')}`;
+}
+
 function formatWindow(name, detail) {
   if (typeof detail === 'string') return `  - ${name}: ${detail}`;
-  return `  - ${name}: events ${formatCounts(detail.eventCounts)}; writes ${detail.writeSummary}`;
+  return `  - ${name}: events ${formatCounts(detail.eventCounts)}; writes ${detail.writeSummary}${formatExtra(detail.extra)}`;
 }
 
 function diagnosticsLines(steps) {

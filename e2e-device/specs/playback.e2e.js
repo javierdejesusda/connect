@@ -6,6 +6,7 @@ import {
   advanceOver,
   clockDelta,
   countWrites,
+  displayAdvance,
   keepsAdvancing,
   landingTolerance,
   lastSpinnerAt,
@@ -82,18 +83,18 @@ async function recordResponsiveness(s) {
   }
 }
 
-function recordWindow(s, name, log, fromT, toT) {
+function recordWindow(s, name, log, fromT, toT, extra) {
   try {
-    s.diagnoseWindow(name, windowDiagnostics(log, fromT, toT));
+    s.diagnoseWindow(name, windowDiagnostics(log, fromT, toT, extra));
   } catch (error) {
     s.diagnoseWindow(name, `unavailable: ${error.message}`);
   }
 }
 
-async function recordWindowSince(s, name, fromT) {
+async function recordWindowSince(s, name, fromT, extra) {
   try {
     const log = await page.logSince(fromT);
-    recordWindow(s, name, log, fromT, log.t);
+    recordWindow(s, name, log, fromT, log.t, extra);
   } catch (error) {
     s.diagnoseWindow(name, `unavailable: ${error.message}`);
   }
@@ -501,9 +502,13 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         if (!frame) continue;
         const startCt = frame.advance.ct;
         const decoded = frame.log.samples.filter((x) => x.rs >= 2 && typeof x.ct === 'number');
+        const wallBeforeSnap0 = Date.now();
         const snap0 = await page.snap();
+        const wallAfterSnap0 = Date.now();
         await browser.pause(4000);
+        const wallAfterPause = Date.now();
         const snap1 = await page.snap();
+        const wallAfterSnap1 = Date.now();
         const log = await page.logSince(frame.advance.t);
         const span = RANGE_END - RANGE_START;
         const adv = loopAdvance(log.samples.filter((x) => x.t <= frame.advance.t + 4000), span);
@@ -518,6 +523,13 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         s.measure(`${label}.displayedOffsetFromDriveStartS`, shown);
         s.measure(`${label}.advancedIn4sS`, adv.delta);
         s.measure(`${label}.writes`, countWrites(log.writes));
+        const timing = {
+          snapGapMs: Math.round(snap1.t - snap0.t),
+          snapRoundTripMs: [wallAfterSnap0 - wallBeforeSnap0, wallAfterSnap1 - wallAfterPause],
+          pauseWallMs: wallAfterPause - wallAfterSnap0,
+          displayAdvanceInPageS: displayAdvance(log.samples.filter((x) => x.t <= frame.advance.t + 4000), span),
+        };
+        for (const [key, value] of Object.entries(timing)) s.measure(`${label}.${key}`, value);
         if (observedStart) {
           s.check(`${label}: video time starts near 10 s`, startCt !== null && startCt >= 8 && startCt <= 14, startCt, '8..14');
           s.check(`${label}: reported time starts near 10 s after the drive start`, shown !== null && shown >= 7 && shown <= 16, shown, '7..16');
@@ -533,7 +545,7 @@ describe(`playback evidence: ${JOB} (${LABEL})`, () => {
         s.check(`${label}: reported time advances`, shownAdvance !== null && shownAdvance >= 2, shownAdvance, '>= 2');
         s.check(`${label}: playing and no stuck spinner`, snap1.video && !snap1.video.paused && !snap1.video.spinner,
           snap1.video ? `${snap1.video.paused}/${snap1.video.spinner}` : 'no video', 'false/false');
-        await recordWindowSince(s, label, 0);
+        await recordWindowSince(s, label, 0, timing);
       }
     });
   });

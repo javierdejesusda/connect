@@ -4,6 +4,7 @@ import { describe, it } from 'node:test';
 import * as analysis from '../lib/analysis.js';
 
 const EM_DASH = String.fromCharCode(0x2014);
+const EN_DASH = String.fromCharCode(0x2013);
 
 describe('summarizeValues', () => {
   it('reports count, median and max', () => {
@@ -126,6 +127,34 @@ describe('stateTrace', () => {
   });
 });
 
+describe('displayAdvance', () => {
+  const shown = (seconds) => ({ disp: `17:30:${seconds} ${EN_DASH} 0` });
+
+  it('sums how far the displayed clock moved across the once-per-second readings', () => {
+    const samples = [shown(40), shown(41), shown(42), shown(43), shown(44)];
+    assert.equal(analysis.displayAdvance(samples, 10), 4);
+  });
+
+  it('adds the loop span back when the display jumps to the start of the range', () => {
+    const samples = [shown(48), shown(49), shown(40), shown(41)];
+    assert.equal(analysis.displayAdvance(samples, 10), 3);
+  });
+
+  it('skips samples without a display reading', () => {
+    const samples = [{ ct: 1 }, { disp: null }, shown(40), { ct: 2 }, shown(43)];
+    assert.equal(analysis.displayAdvance(samples, 10), 3);
+  });
+
+  it('reports a display that stood still as zero', () => {
+    assert.equal(analysis.displayAdvance([shown(40), shown(40), shown(40)], 10), 0);
+  });
+
+  it('has no answer with fewer than two readings', () => {
+    assert.equal(analysis.displayAdvance([shown(40)], 10), null);
+    assert.equal(analysis.displayAdvance([], 10), null);
+  });
+});
+
 describe('windowDiagnostics', () => {
   const log = {
     samples: [
@@ -155,6 +184,12 @@ describe('windowDiagnostics', () => {
       '+900 seeked ct=12 rs=4 ns=2 play rate=1',
     ]);
     assert.equal(out.trace.length, 2);
+  });
+
+  it('carries extra measurements for the window and leaves them out otherwise', () => {
+    const extra = { snapGapMs: 3999, snapRoundTripMs: [45, 412] };
+    assert.deepEqual(analysis.windowDiagnostics(log, 1000, 5000, extra).extra, extra);
+    assert.equal('extra' in analysis.windowDiagnostics(log, 1000, 5000), false);
   });
 
   it('bounds the ordered logs and the trace', () => {
@@ -200,6 +235,14 @@ describe('renderMarkdown diagnostics', () => {
     assert.match(md, /## Diagnostics/);
     assert.match(md, /^- S2: round trip 11\/38 ms \(n=57\), trivial 10\/22 ms \(n=21\), lag 0\.4\/3\.1 ms \(n=100\)$/m);
     assert.match(md, /^ {2}- steady 10 s: events playing:1 ratechange:2; writes playbackRate=1@204 playbackRate=1@711$/m);
+  });
+
+  it('adds the extra measurements of a window to its line', () => {
+    const extra = { snapGapMs: 3999, snapRoundTripMs: [45, 412], pauseWallMs: 4012, displayAdvanceInPageS: null };
+    const md = analysis.renderMarkdown({ ...base, steps: [step({ windows: { 'deep link 1/3': { ...window10, extra } } })] });
+    const line = '  - deep link 1/3: events playing:1 ratechange:2; writes playbackRate=1@204 playbackRate=1@711; '
+      + 'snapGapMs=3999 snapRoundTripMs=45/412 pauseWallMs=4012 displayAdvanceInPageS=null';
+    assert.ok(md.split('\n').includes(line), `no line: ${line}`);
   });
 
   it('keeps the table row of the step unchanged', () => {
